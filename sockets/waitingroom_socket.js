@@ -3,8 +3,8 @@ const supabase = require("../supabase");
 // Shared in-memory storage
 const lobbies = {};
 
-function initWaitingRoomSocket(io) {
-  io.on("connection", (socket) => {
+function initWaitingRoomSocket(ioNamespace) {
+  ioNamespace.on("connection", (socket) => {
     console.log(`🟢 [WaitingRoom Socket Created] ID: ${socket.id}`);
 
     // Player joins a lobby
@@ -44,7 +44,6 @@ function initWaitingRoomSocket(io) {
         }
       }
 
-      // Add player if not already in lobby
       if (!lobbies[lobbyId].players.find((p) => p.id === playerId)) {
         lobbies[lobbyId].players.push({
           id: playerId,
@@ -57,7 +56,6 @@ function initWaitingRoomSocket(io) {
       emitLobbyUpdate(lobbyId);
     });
 
-    // Ready/unready
     socket.on("setReady", ({ lobbyId, playerId, isReady }) => {
       const lobby = lobbies[lobbyId];
       if (!lobby) return;
@@ -70,60 +68,61 @@ function initWaitingRoomSocket(io) {
       emitLobbyUpdate(lobbyId);
     });
 
-    // Start game
     socket.on("startGame", ({ lobbyId }) => {
-      const lobby = lobbies[lobbyId];
-      if (!lobby) return;
+  const lobby = lobbies[lobbyId];
+  if (!lobby) return;
 
-      const owner = lobby.players.find((p) => p.id === lobby.ownerId);
-      if (!owner || socket.id !== owner.socketId) return;
-      if (!lobby.players.every((p) => p.is_ready)) return;
+  const owner = lobby.players.find((p) => p.id === lobby.ownerId);
+  if (!owner || socket.id !== owner.socketId) return;
+  if (!lobby.players.every((p) => p.is_ready)) return;
 
-      lobby.timeLeft = 5;
-      io.to(lobbyId).emit("countdown", { timeLeft: lobby.timeLeft });
+  // Reset game state
+  lobby.solvedItems = [];
+  lobby.currentTurnIndex = 0;
+  lobby.currentTurn = lobby.players[0].id; // or choose random first player
+  lobby.timeLeft = 5;
 
-      if (lobby.timer) clearInterval(lobby.timer);
-      lobby.timer = setInterval(() => {
-        lobby.timeLeft--;
-        io.to(lobbyId).emit("countdown", { timeLeft: lobby.timeLeft });
+  ioNamespace.to(lobbyId).emit("countdown", { timeLeft: lobby.timeLeft });
 
-        if (lobby.timeLeft <= 0) {
-          clearInterval(lobby.timer);
-          lobby.timer = null;
+  if (lobby.timer) clearInterval(lobby.timer);
+  lobby.timer = setInterval(() => {
+    lobby.timeLeft--;
+    ioNamespace.to(lobbyId).emit("countdown", { timeLeft: lobby.timeLeft });
 
-          lobby.currentTurnIndex = 0;
-          lobby.currentTurn = owner.id;
+    if (lobby.timeLeft <= 0) {
+      clearInterval(lobby.timer);
+      lobby.timer = null;
 
-          io.to(lobbyId).emit("gameStarted", {
-            firstTurnPlayerId: owner.id,
-            firstTurnPlayerName: owner.name,
-            turnTime: lobby.turnTime,
-          });
+      // Emit game started with first player info
+      const firstPlayer = lobby.players[lobby.currentTurnIndex];
+      lobby.currentTurn = firstPlayer.id;
 
-          console.log(`🎮 Game started in lobby ${lobbyId}, first turn: ${owner.name}`);
-        }
-      }, 1000);
-    });
+      ioNamespace.to(lobbyId).emit("gameStarted", {
+        firstTurnPlayerId: firstPlayer.id,
+        firstTurnPlayerName: firstPlayer.name,
+        turnTime: lobby.turnTime,
+      });
 
-    // Leave lobby
+      console.log(`🎮 Game started in lobby ${lobbyId}, first turn: ${firstPlayer.name}`);
+    }
+  }, 1000);
+});
+
+
     socket.on("leaveLobby", ({ lobbyId, playerId }) => {
       removePlayerFromLobby(lobbyId, playerId, socket);
     });
 
-    // Disconnect
     socket.on("disconnect", () => {
       console.log(`🔴 [WaitingRoom Socket Disconnected] ID: ${socket.id}`);
 
       for (const lobbyId in lobbies) {
         const lobby = lobbies[lobbyId];
         const player = lobby.players.find((p) => p.socketId === socket.id);
-        if (player) {
-          removePlayerFromLobby(lobbyId, player.id);
-        }
+        if (player) removePlayerFromLobby(lobbyId, player.id);
       }
     });
 
-    // Helper: emit lobby update
     function emitLobbyUpdate(lobbyId) {
       const lobby = lobbies[lobbyId];
       if (!lobby) return;
@@ -133,50 +132,45 @@ function initWaitingRoomSocket(io) {
           .map((p) => `${p.id}-${p.name}`)
           .join(", ")}`
       );
-      io.to(lobbyId).emit("lobbyUpdate", lobby);
+      ioNamespace.to(lobbyId).emit("lobbyUpdate", lobby);
     }
 
-    // Helper: remove player from lobby
     async function removePlayerFromLobby(lobbyId, playerId, socketInstance = null) {
-  const lobby = lobbies[lobbyId];
-  if (!lobby) return;
+      const lobby = lobbies[lobbyId];
+      if (!lobby) return;
 
-  const index = lobby.players.findIndex((p) => p.id === playerId);
-  if (index === -1) return;
+      const index = lobby.players.findIndex((p) => p.id === playerId);
+      if (index === -1) return;
 
-  const leavingPlayer = lobby.players.splice(index, 1)[0];
-  console.log(`❌ Player ${playerId} (${leavingPlayer.name}) left lobby ${lobbyId}`);
+      const leavingPlayer = lobby.players.splice(index, 1)[0];
+      console.log(`❌ Player ${playerId} (${leavingPlayer.name}) left lobby ${lobbyId}`);
 
-  // 🔄 Update DB: set lobby_id back to null
-  try {
-    const { error } = await supabase
-      .from("players")
-      .update({ lobby_id: null })
-      .eq("id", playerId);
+      try {
+        const { error } = await supabase
+          .from("players")
+          .update({ lobby_id: null })
+          .eq("id", playerId);
+        if (error) console.error("⚠️ Failed to reset lobby_id in DB:", error);
+      } catch (err) {
+        console.error("⚠️ Exception while resetting lobby_id:", err);
+      }
 
-    if (error) {
-      console.error("⚠️ Failed to reset lobby_id in DB:", error);
+      ioNamespace.to(lobbyId).emit("playerLeft", {
+        playerId: leavingPlayer.id,
+        playerName: leavingPlayer.name,
+      });
+
+      if (lobby.players.length === 0) {
+        if (lobby.timer) clearInterval(lobby.timer);
+        delete lobbies[lobbyId];
+        console.log(`🗑️ Lobby ${lobbyId} deleted (empty)`);
+      } else {
+        if (lobby.ownerId === playerId) lobby.ownerId = lobby.players[0].id;
+        emitLobbyUpdate(lobbyId);
+      }
+
+      if (socketInstance) socketInstance.leave(lobbyId);
     }
-  } catch (err) {
-    console.error("⚠️ Exception while resetting lobby_id:", err);
-  }
-
-  io.to(lobbyId).emit("playerLeft", {
-    playerId: leavingPlayer.id,
-    playerName: leavingPlayer.name,
-  });
-
-  if (lobby.players.length === 0) {
-    if (lobby.timer) clearInterval(lobby.timer);
-    delete lobbies[lobbyId];
-    console.log(`🗑️ Lobby ${lobbyId} deleted (empty)`);
-  } else {
-    if (lobby.ownerId === playerId) lobby.ownerId = lobby.players[0].id;
-    emitLobbyUpdate(lobbyId);
-  }
-
-  if (socketInstance) socketInstance.leave(lobbyId);
-}
   });
 }
 
