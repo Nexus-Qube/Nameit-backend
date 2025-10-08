@@ -1,13 +1,8 @@
-const { initWaitingRoomSocket } = require("./sockets/waitingroom_socket");
-const { initChallengeSocket } = require("./sockets/challenge_socket");
+const { initGameSocket } = require("./sockets/game_socket");
 
 function initSocket(io) {
-  // Create separate namespaces for clarity
-  const waitingRoomNamespace = io.of("/waiting-room");
-  const challengeNamespace = io.of("/challenge");
-
-  initWaitingRoomSocket(waitingRoomNamespace);
-  initChallengeSocket(challengeNamespace);
+  // Use single namespace for everything
+  initGameSocket(io);
 }
 
 module.exports = initSocket;
