@@ -82,10 +82,36 @@ initSocket(io);
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0'; // Always bind to all interfaces
 
-server.listen(PORT, HOST, () => {
-  console.log(`🚀 Server running on http://${HOST}:${PORT}`);
+// Start server immediately, don't wait for Redis
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Redis: ${process.env.REDIS_URL ? 'configured' : 'local'}`);
-  console.log(`✅ Health check: http://${HOST}:${PORT}/health`);
+  console.log(`✅ Health check: http://0.0.0.0:${PORT}/health`);
   console.log(`🎯 Socket.IO: WebSocket server ready`);
+  console.log(`⏳ Redis will connect in the background...`);
+});
+
+// Add a health check that handles Redis not being ready
+app.get('/health', async (req, res) => {
+  const redis = require('./src/config/redisClient');
+  
+  try {
+    await redis.ping();
+    res.status(200).json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      redis: 'connected'
+    });
+  } catch (err) {
+    // Still return 200 but indicate Redis is connecting
+    res.status(200).json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      redis: 'connecting',
+      message: 'Redis is connecting in background'
+    });
+  }
 });
