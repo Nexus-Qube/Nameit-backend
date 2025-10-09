@@ -1,23 +1,24 @@
 const Redis = require("ioredis");
 
+console.log('🔍 Environment check:');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('REDIS_URL:', process.env.REDIS_URL ? 'set' : 'NOT SET');
+
 let redis;
 
 if (process.env.REDIS_URL) {
-  // ✅ Production or Render Redis
-  console.log('🔗 Connecting to Redis URL:', process.env.REDIS_URL.replace(/:\/\/[^@]*@/, '://***@')); // Hide password in logs
+  console.log('🔗 Connecting to Render Redis...');
   redis = new Redis(process.env.REDIS_URL, {
-    // Render Redis specific configuration
-    tls: process.env.NODE_ENV === 'production' ? {} : undefined,
+    tls: {}, // Render Redis requires TLS
     retryDelayOnFailover: 100,
     maxRetriesPerRequest: 3,
     enableReadyCheck: false,
     lazyConnect: true,
-    connectTimeout: 10000,
-    commandTimeout: 5000
+    connectTimeout: 15000, // Increased timeout for Render
+    commandTimeout: 10000
   });
 } else {
-  // ✅ Local development
-  console.log('🔗 Connecting to local Redis...');
+  console.log('⚠️  REDIS_URL not set, falling back to local Redis');
   redis = new Redis({
     host: "127.0.0.1",
     port: 6379,
