@@ -82,7 +82,8 @@ function initGameSocket(io) {
           socketId: socket.id,
           name,
           is_ready: false,
-          inGame: false
+          inGame: false,
+          color: null
         });
       } else {
         // Update socket ID and set as not in game
@@ -165,7 +166,8 @@ function initGameSocket(io) {
           socketId: socket.id,
           name,
           is_ready: false,
-          inGame: false
+          inGame: false,
+          color: null
         });
       } else {
         newLobby.players[existingPlayerIndex].socketId = socket.id;
@@ -190,6 +192,59 @@ function initGameSocket(io) {
       await saveLobby(lobbyId, lobby);
       await emitLobbyUpdate(lobbyId);
     });
+
+    // Add this after the "setReady" event handler
+socket.on("updatePlayerColor", async ({ lobbyId, playerId, color }) => {
+  const lobby = await getLobby(lobbyId);
+  if (!lobby) return;
+
+  const player = lobby.players.find((p) => String(p.id) === String(playerId));
+  if (!player) return;
+
+  // Check if color is already taken by another player
+  const colorTaken = lobby.players.some(p => 
+    String(p.id) !== String(playerId) && p.color === color
+  );
+
+  if (colorTaken && color !== null) {
+    console.log(`🎨 Color ${color} already taken in lobby ${lobbyId}`);
+    socket.emit("colorUpdateFailed", { reason: "Color already taken" });
+    return;
+  }
+
+  player.color = color;
+  console.log(`🎨 Player ${playerId} updated color to: ${color}`);
+  
+  await saveLobby(lobbyId, lobby);
+  await emitLobbyUpdate(lobbyId);
+});
+
+    // Add this in your game_socket.js after the "setReady" event
+socket.on("updateGameSettings", async ({ lobbyId, playerId, turnTime, gameMode }) => {
+  const lobby = await getLobby(lobbyId);
+  if (!lobby) return;
+
+  // Only owner can update settings
+  if (String(playerId) !== String(lobby.ownerId)) return;
+
+  if (turnTime) {
+    lobby.turnTime = turnTime;
+    console.log(`⚙️ Lobby ${lobbyId} turn time updated to ${turnTime}s by owner ${playerId}`);
+  }
+
+  if (gameMode) {
+    lobby.gameMode = gameMode;
+    console.log(`⚙️ Lobby ${lobbyId} game mode updated to ${gameMode} by owner ${playerId}`);
+  }
+
+  await saveLobby(lobbyId, lobby);
+  
+  // Notify all players about the updated settings
+  io.to(`waiting_${lobbyId}`).emit("gameSettingsUpdated", {
+    turnTime: lobby.turnTime,
+    gameMode: lobby.gameMode
+  });
+});
 
     socket.on("startGame", async ({ lobbyId }) => {
       const lobby = await getLobby(lobbyId);
@@ -275,7 +330,10 @@ function initGameSocket(io) {
       }
 
       // Send current solved items to this player
-      socket.emit("initItems", { solvedItems: lobby.solvedItems || [] });
+      socket.emit("initItems", { 
+  solvedItems: lobby.solvedItems || [],
+  players: lobby.players // Send player data including colors
+});
     });
 
     // Handle button press in game
@@ -296,8 +354,14 @@ function initGameSocket(io) {
         if (!lobby.solvedItems) lobby.solvedItems = [];
         if (!lobby.solvedItems.includes(itemId)) {
           lobby.solvedItems.push(itemId);
-          io.to(`game_${lobbyId}`).emit("itemSolved", { itemId });
-          console.log(`✅ Item ${itemId} solved in lobby ${lobbyId}`);
+          // Track which player solved the item
+    const solvedBy = playerId;
+
+          io.to(`game_${lobbyId}`).emit("itemSolved", { 
+      itemId, 
+      solvedBy 
+    });
+          console.log(`✅ Item ${itemId} solved by player ${solvedBy} in lobby ${lobbyId}`);
         }
       }
 
@@ -408,10 +472,11 @@ function initGameSocket(io) {
       await saveLobby(lobbyId, lobby);
 
       io.to(`game_${lobbyId}`).emit("turnChanged", {
-        currentTurnId: lobby.currentTurn,
-        currentTurnName: lobby.players[currentIndex].name,
-        timeLeft: lobby.turnTime,
-      });
+  currentTurnId: lobby.currentTurn,
+  currentTurnName: lobby.players[currentIndex].name,
+  timeLeft: lobby.turnTime,
+  players: lobby.players // Send player data including colors
+});
 
       console.log(`🔄 Turn advanced in lobby ${lobbyId}, player ${lobby.currentTurn}`);
     }
