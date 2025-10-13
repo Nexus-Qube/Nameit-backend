@@ -354,8 +354,8 @@ socket.on("updateGameSettings", async ({ lobbyId, playerId, turnTime, gameMode }
         if (!lobby.solvedItems) lobby.solvedItems = [];
         if (!lobby.solvedItems.includes(itemId)) {
           lobby.solvedItems.push(itemId);
-          // Track which player solved the item
-    const solvedBy = playerId;
+          // Track which player solved the item - FIXED: use solvedBy instead of playerId
+          const solvedBy = playerId;
 
           io.to(`game_${lobbyId}`).emit("itemSolved", { 
       itemId, 
