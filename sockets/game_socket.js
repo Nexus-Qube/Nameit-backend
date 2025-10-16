@@ -426,7 +426,7 @@ function initGameSocket(io) {
           if (lobby.gameMode === 2) {
             await removePlayerFromGame(lobbyId, playerId, null, "timeout");
           } else {
-            await removePlayerFromGame(lobbyId, playerId);
+            await removePlayerFromGame(lobbyId, playerId, null, "timeout");
           }
         } else {
           console.log(`❌ Wrong answer by player ${playerId}, eliminating player`);
@@ -434,7 +434,7 @@ function initGameSocket(io) {
           if (lobby.gameMode === 2) {
             await removePlayerFromGame(lobbyId, playerId, null, "wrongAnswer");
           } else {
-            await removePlayerFromGame(lobbyId, playerId, socket);
+            await removePlayerFromGame(lobbyId, playerId, socket, "wrongAnswer");
           }
         }
         return;
@@ -734,20 +734,29 @@ function initGameSocket(io) {
     // --- HELPER FUNCTIONS ---
 
     async function advanceTurn(lobbyId) {
+      // CRITICAL FIX: Get fresh lobby data to ensure we have latest inGame status
       const lobby = await getLobby(lobbyId);
       if (!lobby || lobby.players.length === 0) return;
 
       console.log(`🔄 Advancing turn from player ${lobby.currentTurn}`);
-      console.log(`📊 Available players: ${lobby.players.map(p => `${p.id}-${p.name}`).join(', ')}`);
+      
+      // Filter to only active players (inGame: true)
+      const activePlayers = lobby.players.filter(p => p.inGame === true);
+      console.log(`📊 Active players: ${activePlayers.map(p => `${p.id}-${p.name} (inGame: ${p.inGame})`).join(', ')}`);
+
+      if (activePlayers.length === 0) {
+        console.log(`❌ No active players left in lobby ${lobbyId}`);
+        return;
+      }
 
       // If there's only one player left, they win
-      if (lobby.players.length === 1 && lobby.inGame) {
+      if (activePlayers.length === 1 && lobby.inGame) {
         console.log(`🏁 Only one player left in lobby ${lobbyId}, declaring winner`);
         
         // Mark game as ended to prevent double declaration
         lobby.inGame = false;
         
-        io.to(`game_${lobbyId}`).emit("gameOver", { winner: lobby.players[0] });
+        io.to(`game_${lobbyId}`).emit("gameOver", { winner: activePlayers[0] });
         
         // Reset game state but keep players
         lobby.solvedItems = [];
@@ -761,26 +770,35 @@ function initGameSocket(io) {
         return;
       }
 
-      let currentIndex = lobby.players.findIndex(p => String(p.id) === String(lobby.currentTurn));
+      // Find current player index in ACTIVE players
+      let currentIndex = activePlayers.findIndex(p => String(p.id) === String(lobby.currentTurn));
       
-      console.log(`🔍 Found current index: ${currentIndex}`);
+      console.log(`🔍 Found current index in active players: ${currentIndex}`);
       
       if (currentIndex === -1) {
-        currentIndex = Math.floor(Math.random() * lobby.players.length);
+        // Current player not found in active players (might be eliminated), start from random active player
+        currentIndex = Math.floor(Math.random() * activePlayers.length);
+        console.log(`🎲 Starting from random active player at index: ${currentIndex}`);
       } else {
-        currentIndex = (currentIndex + 1) % lobby.players.length;
+        // Move to next active player
+        currentIndex = (currentIndex + 1) % activePlayers.length;
+        console.log(`➡️ Moving to next active player at index: ${currentIndex}`);
       }
 
-      lobby.currentTurnIndex = currentIndex;
-      lobby.currentTurn = String(lobby.players[currentIndex].id);
+      // Update lobby state with the new turn from active players
+      lobby.currentTurn = String(activePlayers[currentIndex].id);
+      
+      // Also update the currentTurnIndex based on the full players array for consistency
+      const fullIndex = lobby.players.findIndex(p => String(p.id) === String(lobby.currentTurn));
+      lobby.currentTurnIndex = fullIndex;
 
-      console.log(`🔄 New turn: player ${lobby.currentTurn} (${lobby.players[currentIndex].name}) at index: ${currentIndex}`);
+      console.log(`🔄 New turn: player ${lobby.currentTurn} (${activePlayers[currentIndex].name}) at active index: ${currentIndex}, full index: ${fullIndex}`);
 
       await saveLobby(lobbyId, lobby);
 
       io.to(`game_${lobbyId}`).emit("turnChanged", {
         currentTurnId: lobby.currentTurn,
-        currentTurnName: lobby.players[currentIndex].name,
+        currentTurnName: activePlayers[currentIndex].name,
         timeLeft: lobby.turnTime,
         players: lobby.players // Send player data including colors
       });
@@ -789,6 +807,7 @@ function initGameSocket(io) {
     }
 
     async function removePlayerFromGame(lobbyId, playerId, socketInstance = null, eliminationReason = null) {
+      // CRITICAL FIX: Get fresh lobby data
       const lobby = await getLobby(lobbyId);
       if (!lobby) return;
 
@@ -801,10 +820,11 @@ function initGameSocket(io) {
       const player = lobby.players.find((p) => p.id === playerId);
       if (!player) return;
 
-      // DON'T remove player from lobby - just mark as not in game
+      // Mark player as not in game (eliminated)
       player.inGame = false;
       
       console.log(`❌ Player ${playerId} (${player.name}) eliminated from game in lobby ${lobbyId}, reason: ${eliminationReason || "left"}`);
+      console.log(`📊 Player ${playerId} inGame set to: ${player.inGame}`);
 
       // For Hide & Seek mode, use playerEliminated event
       if (lobby.gameMode === 2 && eliminationReason) {
@@ -823,34 +843,44 @@ function initGameSocket(io) {
         io.to(`game_${lobbyId}`).emit("playerLeft", { playerId, playerName: player.name });
       }
 
-      if (lobby.players.filter(p => p.inGame).length === 1 && lobby.inGame) {
+      // CRITICAL: Save the lobby state immediately after updating inGame status
+      await saveLobby(lobbyId, lobby);
+
+      // Check if game should end - only count active players (inGame: true)
+      // CRITICAL: Get fresh lobby data again to ensure we have the latest state
+      const updatedLobby = await getLobby(lobbyId);
+      const activePlayers = updatedLobby.players.filter(p => p.inGame === true);
+      console.log(`📊 Remaining active players: ${activePlayers.map(p => `${p.id}-${p.name}`).join(', ')}`);
+      
+      if (activePlayers.length === 1 && updatedLobby.inGame) {
         console.log(`🏁 Only one player left in lobby ${lobbyId}, declaring winner`);
         
         // Mark game as ended to prevent double declaration
-        lobby.inGame = false;
+        updatedLobby.inGame = false;
         
-        const winner = lobby.players.find(p => p.inGame);
+        const winner = activePlayers[0];
         if (winner) {
           io.to(`game_${lobbyId}`).emit("gameOver", { winner });
           
           // Reset game state but keep players
-          lobby.solvedItems = [];
-          lobby.currentTurn = null;
-          if (lobby.gameMode === 2) {
-            lobby.eliminatedPlayers = new Set();
-            lobby.hideSeekSelections = {};
-            lobby.selectionPhase = false;
+          updatedLobby.solvedItems = [];
+          updatedLobby.currentTurn = null;
+          if (updatedLobby.gameMode === 2) {
+            updatedLobby.eliminatedPlayers = new Set();
+            updatedLobby.hideSeekSelections = {};
+            updatedLobby.selectionPhase = false;
           }
-          lobby.players.forEach(p => p.inGame = false);
+          updatedLobby.players.forEach(p => p.inGame = false);
         }
         
-        await saveLobby(lobbyId, lobby);
-      } else if (lobby.players.length === 0) {
+        await saveLobby(lobbyId, updatedLobby);
+      } else if (updatedLobby.players.length === 0) {
         await deleteLobby(lobbyId);
-      } else if (Number(lobby.currentTurn) === Number(playerId)) {
+      } else if (Number(updatedLobby.currentTurn) === Number(playerId)) {
+        // If the eliminated player was the current turn, advance to next ACTIVE player
         await advanceTurn(lobbyId);
       } else {
-        await saveLobby(lobbyId, lobby);
+        await saveLobby(lobbyId, updatedLobby);
       }
 
       if (socketInstance) {
