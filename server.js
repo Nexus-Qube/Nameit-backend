@@ -63,10 +63,13 @@ app.get('/', (req, res) => {
 
 // Create HTTP server and attach Socket.IO
 const server = http.createServer(app);
+
+// FIXED: Update Socket.io CORS configuration
 const io = require('socket.io')(server, {
   cors: { 
-    origin: process.env.NODE_ENV === 'production' ? false : "*", // More restrictive in production
-    methods: ['GET','POST'] 
+    origin: allowedOrigins, // Use the same allowed origins as Express
+    methods: ['GET','POST'],
+    credentials: true
   },
   // Production optimizations
   pingTimeout: 60000,
