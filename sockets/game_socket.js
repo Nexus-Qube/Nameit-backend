@@ -274,14 +274,14 @@ function initGameSocket(io) {
       lobby.inGame = true;
       
       // Initialize hide & seek selections if game mode is 2
-      if (lobby.gameMode === 2) {
-        lobby.hideSeekSelections = {};
-        lobby.selectionPhase = true;
-        lobby.gameStartCountdown = 3; // 3 seconds for game start countdown after selection
-        console.log(`🎯 Hide & Seek mode - starting selection phase`);
-      } else {
-        lobby.selectionPhase = false;
-      }
+      if (lobby.gameMode === 2 || lobby.gameMode === 3) {
+  lobby.hideSeekSelections = {};
+  lobby.selectionPhase = true;
+  lobby.gameStartCountdown = 3;
+  console.log(`🎯 ${lobby.gameMode === 2 ? 'Hide & Seek' : 'Trap'} mode - starting selection phase`);
+} else {
+  lobby.selectionPhase = false;
+}
 
       // Mark all players as in game
       lobby.players.forEach(player => {
@@ -374,50 +374,66 @@ function initGameSocket(io) {
 
     // Handle button press in game
     socket.on("buttonPress", async ({ lobbyId, playerId, correct, timeout, itemId, isHideSeekItem = false }) => {
-      const lobby = await getLobby(lobbyId);
-      if (!lobby) return;
+  const lobby = await getLobby(lobbyId);
+  if (!lobby) return;
 
-      console.log(`🔍 Current turn: ${lobby.currentTurn}, Player pressing: ${playerId}`);
+  console.log(`🔍 Current turn: ${lobby.currentTurn}, Player pressing: ${playerId}`);
 
-      if (Number(playerId) !== Number(lobby.currentTurn)) {
-        console.log(`⚠️ buttonPress ignored, not player ${playerId}'s turn. Current turn: ${lobby.currentTurn}`);
-        return;
-      }
+  if (Number(playerId) !== Number(lobby.currentTurn)) {
+    console.log(`⚠️ buttonPress ignored, not player ${playerId}'s turn. Current turn: ${lobby.currentTurn}`);
+    return;
+  }
 
-      console.log(`🖲️ Button pressed by player ${playerId}, correct: ${correct}, timeout: ${timeout || false}, itemId: ${itemId || "N/A"}, isHideSeekItem: ${isHideSeekItem}`);
+  console.log(`🖲️ Button pressed by player ${playerId}, correct: ${correct}, timeout: ${timeout || false}, itemId: ${itemId || "N/A"}, isHideSeekItem: ${isHideSeekItem}`);
 
-      if (correct && itemId) {
-        if (!lobby.solvedItems) lobby.solvedItems = [];
-        if (!lobby.solvedItems.includes(itemId)) {
-          lobby.solvedItems.push(itemId);
-          const solvedBy = playerId;
+  if (correct && itemId) {
+    if (!lobby.solvedItems) lobby.solvedItems = [];
+    if (!lobby.solvedItems.includes(itemId)) {
+      lobby.solvedItems.push(itemId);
+      const solvedBy = playerId;
 
-          // For Hide & Seek mode, check if this is someone's hide & seek item
-          let isHideSeekItemFound = false;
-          if (lobby.gameMode === 2 && lobby.hideSeekSelections) {
-            // Check if this item belongs to another player
-            for (const [hideSeekPlayerId, selectedItem] of Object.entries(lobby.hideSeekSelections)) {
-              if (Number(selectedItem.id) === Number(itemId) && Number(hideSeekPlayerId) !== Number(playerId)) {
-                isHideSeekItemFound = true;
-                console.log(`🎯 Player ${playerId} found hide & seek item of player ${hideSeekPlayerId}`);
-                
-                // Eliminate the player who owned this hide & seek item
-                setTimeout(async () => {
-                  await removePlayerFromGame(lobbyId, Number(hideSeekPlayerId), null, "hideSeekItemFound");
-                }, 100);
-                break;
-              }
+      // For Hide & Seek AND Trap modes, check if this is someone's special item
+      let isHideSeekItemFound = false;
+      let trapSprung = false;
+      
+      if ((lobby.gameMode === 2 || lobby.gameMode === 3) && lobby.hideSeekSelections) {
+        // Check if this item belongs to another player
+        for (const [specialItemPlayerId, selectedItem] of Object.entries(lobby.hideSeekSelections)) {
+          if (Number(selectedItem.id) === Number(itemId) && Number(specialItemPlayerId) !== Number(playerId)) {
+            
+            if (lobby.gameMode === 2) {
+              // HIDE & SEEK MODE: Player who owns the item gets eliminated
+              isHideSeekItemFound = true;
+              console.log(`🎯 Player ${playerId} found hide & seek item of player ${specialItemPlayerId}`);
+              
+              setTimeout(async () => {
+                await removePlayerFromGame(lobbyId, Number(specialItemPlayerId), null, "hideSeekItemFound");
+              }, 100);
+              
+            } else if (lobby.gameMode === 3) {
+              // TRAP MODE: Player who SOLVED the item gets eliminated (the one who stepped on the trap)
+              trapSprung = true;
+              console.log(`💀 TRAP MODE: Player ${playerId} stepped on ${specialItemPlayerId}'s trap - eliminating ${playerId}`);
+              
+              setTimeout(async () => {
+                await removePlayerFromGame(lobbyId, Number(playerId), null, "trapSprung");
+              }, 100);
             }
+            break;
           }
-
-          io.to(`game_${lobbyId}`).emit("itemSolved", { 
-            itemId, 
-            solvedBy,
-            isHideSeekItem: isHideSeekItemFound 
-          });
-          console.log(`✅ Item ${itemId} solved by player ${solvedBy} in lobby ${lobbyId}, isHideSeekItem: ${isHideSeekItemFound}`);
         }
       }
+
+      io.to(`game_${lobbyId}`).emit("itemSolved", { 
+        itemId, 
+        solvedBy,
+        isHideSeekItem: isHideSeekItemFound,
+        trapSprung: trapSprung
+      });
+      
+      console.log(`✅ Item ${itemId} solved by player ${solvedBy} in lobby ${lobbyId}, isHideSeekItem: ${isHideSeekItemFound}, trapSprung: ${trapSprung}`);
+    }
+  }
 
       if (!correct) {
         if (timeout) {
